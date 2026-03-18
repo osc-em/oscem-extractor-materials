@@ -1,6 +1,6 @@
 # Materials Science EM Metadata Extractor
 
-A Python script that extracts metadata from EM data for Materials Science.
+A Python script that extracts metadata from Electron Microscopy (EM) data for Materials Science (MS).
 The extractor is wrapped by a GoLang orchestrator, which will feed the extracted metadata to the [Converter](https://github.com/osc-em/oscem-converter-extracted), for conversion to [OSC-EM schema](https://github.com/osc-em/oscem-schemas).
 Currently supported file formats: `.emd`, `.prz`.
 
@@ -93,23 +93,40 @@ Keep only `dist/extractor_bin` for distribution.
 
 ### Using the executable
 
-The Python executable that we created is being called by `main.go`.
-After completing the metadata extraction, as seen above, the Go orchestrator will then call the module for convertion to OSC-EM schema.
+The Python extractor is bundled as an executable and invoked by the Go orchestrator (`main.go`).
+This means that, after completing the metadata extraction, the Go orchestrator will then call the module for convertion to OSC-EM schema.
 
-The orchestrator is now expecting **two required flagged arguments**:
-- `-i <input_directory>`: is the input directory described above, which feeds the data to the Python extractor
-- `-o <output_file>`: is the name of the file containing the final result, after conversion to OSC-EM is completed
+The orchestrator is now expecting **three required flagged arguments**:
+- `-i <input_directory>` (required): directory holding the single data file to process
+- `-o <output_file>` (required): output path for the converted OSC-EM result
+- `-t <tag>` (required): GitHub release tag to download pinned release assets from
 
-#### Usage
+Additional argument for development:
+- `-e <path>` (optional): local path to a built `extractor_bin` (developer override; no download)
+
+#### Usage:
+
+> Build and run from a cloned repo, downloading assets from a specific release:
 ```
 go build -o ms_reader main.go
-./ms_reader -i <input_directory> -o <output_file>
+./ms_reader -i /path/to/input -o <output_file>.json -t v1.2.3
 ```
 
-#### Notes
+> Run using a locally-built extractor (no network):
+```
+./ms_reader -i /path/to/input -o <output_file>.json -e /path/to/extractor_bin
+```
+
+#### Notes:
 For MS we assume that **one experiment (one dataset) will only consist of one file**.
 Hence, **<input_directory> should contain one file each time**.
 That is, the current version of the MS reader does not cover cases where a dataset may consist of multiple files.
 
 For the converter to understand which MS conversion table to use, we read the type of the file inside <input_directory> and instruct the Go module to use the revelant table.
 Currently there are two such tables: one for `.emd` and one for `.prz` files.
+
+Keep in mind that:
+
+- The code expects a single file inside `<input_directory>` (one dataset per run).
+- CSV conversion tables are pinned to the release tag: when running with `-t <tag>` the program downloads the CSV asset `ms_conversions_<ext>.csv` from the corresponding release and caches it locally.
+- Built extractor binaries (`extractor_bin`) are expected as release assets; do not commit `dist/extractor_bin` to `main`.
