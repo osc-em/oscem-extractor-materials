@@ -43,11 +43,13 @@ It packages Python code as bytecode along with a Python interpreter, making it r
 #### Step-by-Step Instructions
 
 **1. Set Up Environment:**
-Assuming you have a `venv` named `ms_extractor`, in which you have installed the extractor dependecies mentioned above, activate your virtual environment and install PyInstaller.
+Create and activate a Python 3.12.3 virtual environment and install the extractor dependencies and PyInstaller:
 
 ```bash
+python3.12 -m venv ms_extractor
 source ms_extractor/bin/activate
-pip install pyinstaller
+python -m pip install --upgrade pip
+pip install -r requirements.txt pyinstaller
 ```
 
 **2. Usage:**
@@ -71,14 +73,14 @@ This creates:
 
 **3. After compilation:**
 ```bash
-# Test the executable
-./dist/extractor_bin <input_directory>
-
 # Check file type
 file dist/extractor_bin
 
 # Check size
 ls -lh dist/extractor_bin
+
+# Test the executable
+./dist/extractor_bin <input_directory>
 ```
 
 **4. Cleanup:**
@@ -89,30 +91,29 @@ rm -rf build/
 rm *.spec  # if you don't need to customize
 ```
 
-Keep only `dist/extractor_bin` for distribution.
+`extractor_bin` is the only thing you need for local development and, as long as it is in the `/dist` directory, it will be automatically detected by the orchestrator.
 
 ### Using the executable
 
 The Python extractor is bundled as an executable and invoked by the Go orchestrator (`main.go`).
 This means that, after completing the metadata extraction, the Go orchestrator will then call the module for convertion to OSC-EM schema.
 
-The orchestrator is now expecting **three required flagged arguments**:
+The orchestrator expects **two required flagged arguments**:
 - `-i <input_directory>` (required): directory holding the single data file to process
 - `-o <output_file>` (required): output path for the converted OSC-EM result
-- `-t <tag>` (required): GitHub release tag to download pinned release assets from
 
-Additional argument for development:
-- `-e <path>` (optional): local path to a built `extractor_bin` (developer override; no download)
+Optional development override:
+- `-e <path>` (optional): local path to a different extractor (developer override)
 
 #### Usage:
 
-> Build and run from a cloned repo, downloading assets from a specific release:
+> Build and run from a cloned repo (assets provided locally):
 ```
 go build -o ms_reader main.go
-./ms_reader -i /path/to/input -o <output_file>.json -t v1.2.3
+./ms_reader -i /path/to/input -o <output_file>.json
 ```
 
-> Run using a locally-built extractor (no network):
+> Run using another extractor (developer override):
 ```
 ./ms_reader -i /path/to/input -o <output_file>.json -e /path/to/extractor_bin
 ```
@@ -120,7 +121,7 @@ go build -o ms_reader main.go
 #### Notes:
 For MS we assume that **one experiment (one dataset) will only consist of one file**.
 Hence, **<input_directory> should contain one file each time**.
-That is, the current version of the MS reader does not cover cases where a dataset may consist of multiple files.
+That is, the current version of the MS metadata extractor does not cover cases where a dataset may consist of multiple files.
 
 For the converter to understand which MS conversion table to use, we read the type of the file inside <input_directory> and instruct the Go module to use the revelant table.
 Currently there are two such tables: one for `.emd` and one for `.prz` files.
@@ -128,5 +129,6 @@ Currently there are two such tables: one for `.emd` and one for `.prz` files.
 Keep in mind that:
 
 - The code expects a single file inside `<input_directory>` (one dataset per run).
-- CSV conversion tables are pinned to the release tag: when running with `-t <tag>` the program downloads the CSV asset `ms_conversions_<ext>.csv` from the corresponding release and caches it locally.
-- Built extractor binaries (`extractor_bin`) are expected as release assets; do not commit `dist/extractor_bin` to `main`.
+- For the converter to choose the correct table we read the file type inside `<input_directory>`. Currently supported tables are for `.emd` and `.prz` files.
+- For the program to run locally we need to provide the required extractor executable.
+- No locally built binary should be committed to the repo.
