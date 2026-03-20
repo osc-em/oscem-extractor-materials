@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
-	"time"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,12 +23,10 @@ func getFileTypeFromDir(dirPath string) (string, error) {
 		return "", err
 	}
 
-	// Find the first regular file (not directory)
+	// Find the first regular file (not directory) and return its extension
 	for _, entry := range entries {
 		if !entry.IsDir() {
-			filename := entry.Name()
-			ext := strings.ToLower(filepath.Ext(filename))
-			return strings.TrimPrefix(ext, "."), nil
+			return strings.TrimPrefix(filepath.Ext(entry.Name()), "."), nil
 		}
 	}
 	return "", fmt.Errorf("no regular file found in directory")
@@ -51,42 +46,10 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func downloadURLToFile(url, dest string) error {
-	client := &http.Client{Timeout: 60 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("download failed: %s", resp.Status)
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
-	}
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return err
-	}
-	if err := os.Chmod(dest, 0o755); err != nil {
-		return err
-	}
-	return nil
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
-
-func buildReleaseDownloadURL(tag, assetName string) string {
-	return fmt.Sprintf("https://github.com/osc-em/oscem-converter-extracted/releases/download/%s/%s", tag, assetName)
-}
-
-// cacheDir returns a cache directory for downloaded assets.
 func cacheDir() string {
 	if d, err := os.UserCacheDir(); err == nil && d != "" {
 		return filepath.Join(d, "oscem-extractor")
@@ -96,10 +59,29 @@ func cacheDir() string {
 	return filepath.Join(home, ".cache", "oscem-extractor")
 }
 
+// findPackagedRoot walks up from start and returns the nearest ancestor
+// directory that contains either a `dist` or `csv` subdirectory. If none
+// is found, it returns the original start.
+func findPackagedRoot(start string) string {
+	dir := start
+	for {
+		distPath := filepath.Join(dir, "dist")
+		csvPath := filepath.Join(dir, "csv")
+		if dirExists(distPath) || dirExists(csvPath) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return start
+}
+
 func main() {
 	inputDir := flag.String("i", "", "Input directory containing the file to process (required)")
 	outputFile := flag.String("o", "", "Output file for results (required)")
-	tagFlag := flag.String("t", "", "GitHub release tag to download assets from (required)")
 	extractorFlag := flag.String("e", "", "Path to local extractor binary (optional, developer override)")
 
 	flag.Parse()
@@ -133,9 +115,7 @@ func main() {
 	// Resolve extractor binary path. Priority:
 	// 1. Explicit local override of extractor binary (for development)
 	// 2. Packaged file inside the distribution (execDir/dist/...)
-	// 3. GitHub release asset identified by githubTag
 	extractorEnv := *extractorFlag
-	githubTag := *tagFlag
 
 	// asset name depends on OS
 	extractorAssetName := "extractor_bin"
@@ -143,9 +123,17 @@ func main() {
 		extractorAssetName = "extractor_bin.exe"
 	}
 
-	cache := cacheDir()
-	cachedExtractor := filepath.Join(cache, "dist", extractorAssetName)
-	packagedExtractor := filepath.Join(execDir, "dist", extractorAssetName)
+	packagedRoot := findPackagedRoot(execDir)
+	// if nothing packaged was found relative to the executable, also check the current working directory
+	if !(dirExists(filepath.Join(packagedRoot, "dist")) || dirExists(filepath.Join(packagedRoot, "csv"))) {
+		if cwd, err := os.Getwd(); err == nil {
+			pw := findPackagedRoot(cwd)
+			if dirExists(filepath.Join(pw, "dist")) || dirExists(filepath.Join(pw, "csv")) {
+				packagedRoot = pw
+			}
+		}
+	}
+	packagedExtractor := filepath.Join(packagedRoot, "dist", extractorAssetName)
 
 	var extractorPath string
 	if extractorEnv != "" {
@@ -153,18 +141,8 @@ func main() {
 	} else if fileExists(packagedExtractor) {
 		extractorPath = packagedExtractor
 	} else {
-		if githubTag == "" {
-			fmt.Fprintln(os.Stderr, "Extractor not provided. Provide GitHub release tag or set local extractor path (for development).")
-			os.Exit(1)
-		}
-		if !fileExists(cachedExtractor) {
-			url := buildReleaseDownloadURL(githubTag, extractorAssetName)
-			if err := downloadURLToFile(url, cachedExtractor); err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to download extractor asset:", err)
-				os.Exit(1)
-			}
-		}
-		extractorPath = cachedExtractor
+		fmt.Fprintln(os.Stderr, "Extractor not provided.")
+		os.Exit(1)
 	}
 
 	fmt.Println("=== Running Python extractor ===")
@@ -176,29 +154,17 @@ func main() {
 	}
 
 	fmt.Println("=== Running Go converter ===")
-	// Resolve CSV path. Priority:
-	// 1. Packaged csv under execDir/csv/
-	// 2. GitHub release asset `ms_conversions_<ext>.csv`
+	// Resolve CSV path
 	csvAssetName := "ms_conversions_" + fileExt + ".csv"
-	packagedCSV := filepath.Join(execDir, "csv", csvAssetName)
-	cachedCSV := filepath.Join(cache, "csv", csvAssetName)
+	// packagedRoot already computed above (execDir or cwd)
+	packagedCSV := filepath.Join(packagedRoot, "csv", csvAssetName)
 
 	var converterCSVPath string
 	if fileExists(packagedCSV) {
 		converterCSVPath = packagedCSV
 	} else {
-		if githubTag == "" {
-			fmt.Fprintln(os.Stderr, "CSV not provided. Provide GitHub release tag.")
-			os.Exit(1)
-		}
-		if !fileExists(cachedCSV) {
-			url := buildReleaseDownloadURL(githubTag, csvAssetName)
-			if err := downloadURLToFile(url, cachedCSV); err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to download CSV asset:", err)
-				os.Exit(1)
-			}
-		}
-		converterCSVPath = cachedCSV
+		fmt.Fprintln(os.Stderr, "CSV not provided.")
+		os.Exit(1)
 	}
 
 	out, err := conversion.Convert([]byte(data), converterCSVPath, "", "", outputFilePath)
